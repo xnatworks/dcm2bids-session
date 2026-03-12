@@ -117,6 +117,14 @@ def rename_echo_file(filename):
     return filename
 
 
+def match_regex_pattern(seriesdesc, regex_patterns):
+    """Try regex patterns against a series description. Returns matched entry or None."""
+    for entry in regex_patterns:
+        if re.search(entry['pattern'], seriesdesc):
+            return entry
+    return None
+
+
 BIDSVERSION = "1.0.1"
 
 parser = argparse.ArgumentParser(description="Run dcm2niix on every file in a session")
@@ -254,7 +262,22 @@ try:
             if mapentry not in bidsmaplist:
                 bidsmaplist.append(mapentry)
     else:
-        print("Could not read project BIDS map")
+        print("Could not read project BIDS map from config service, checking project resource")
+        r = xnatSession.httpsess.get(host + "/data/projects/%s/resources/BIDS_bidsmap/files/bidsmap.json" % project)
+        if r.ok:
+            print("Found BIDS map in project resource BIDS_bidsmap/bidsmap.json")
+            bidsmaptoadd = r.json()
+            # Handle both list format and wrapped format with "mappings" key
+            if isinstance(bidsmaptoadd, dict) and "mappings" in bidsmaptoadd:
+                bidsmaptoadd = bidsmaptoadd["mappings"]
+            if isinstance(bidsmaptoadd, list):
+                for mapentry in bidsmaptoadd:
+                    if mapentry not in bidsmaplist:
+                        bidsmaplist.append(mapentry)
+            else:
+                print("Warning: BIDS_bidsmap/bidsmap.json has unexpected format, skipping")
+        else:
+            print("Could not read project BIDS map")
     
     print("BIDS map: " + json.dumps(bidsmaplist))
     
@@ -267,9 +290,21 @@ try:
         bidsnamemap = {x[key].lower(): x['bidsname'] for x in bidsmaplist if key in x and 'bidsname' in x}
 
     #print "bidsnamemap: " + json.dumps(bidsnamemap)
-    
+
+    # Separate regex pattern entries from exact-match entries
+    regex_patterns = [x for x in bidsmaplist if 'pattern' in x]
+    if regex_patterns:
+        print("Regex patterns: " + json.dumps(regex_patterns))
+
     # Map all series descriptions to BIDS names (case insensitive)
-    resolved = [bidsnamemap[x.lower()] for x in fieldList if x.lower() in bidsnamemap]
+    resolved = []
+    for x in fieldList:
+        if x.lower() in bidsnamemap:
+            resolved.append(bidsnamemap[x.lower()])
+        elif regex_patterns:
+            regex_match = match_regex_pattern(x, regex_patterns)
+            if regex_match and regex_match.get('suffix'):
+                resolved.append(regex_match['suffix'])
     
     # Count occurrences
     bidscount = collections.Counter(resolved)
@@ -290,14 +325,29 @@ try:
     
         print('Assigning BIDS name for scan %s.' % scanid)
 
+        regex_modality = None
         if seriesdesc.lower() not in bidsnamemap:
-            print("Series " + seriesdesc + " not found in BIDSMAP")
-            # bidsname = "Z"
-            continue  # Exclude series from processing
+            # Try regex patterns
+            if regex_patterns:
+                regex_match = match_regex_pattern(seriesdesc, regex_patterns)
+                if regex_match:
+                    if not regex_match.get('suffix'):
+                        print("Series " + seriesdesc + " matched exclusion pattern: " + regex_match['pattern'])
+                        continue
+                    match = regex_match['suffix']
+                    regex_modality = regex_match.get('modality')
+                    print("Series " + seriesdesc + " matched regex pattern: " + regex_match['pattern'] + " → " + match)
+                else:
+                    print("Series " + seriesdesc + " not found in BIDSMAP")
+                    continue
+            else:
+                print("Series " + seriesdesc + " not found in BIDSMAP")
+                # bidsname = "Z"
+                continue  # Exclude series from processing
         else:
             print("Series " + seriesdesc + " matched " + bidsnamemap[seriesdesc.lower()])
             match = bidsnamemap[seriesdesc.lower()]
-    
+
         # split before last _
         splitname = match.split("_")
     
@@ -317,7 +367,10 @@ try:
 
         bidsname = base + bidsname
         print("Base " + base + " series " + seriesdesc + " match " + bidsname)
-        bidssubdir = xnatbidsfns.getSubdir(xnatbidsfns.generateBidsNameMap(bidsname)['modality'])
+        if regex_modality:
+            bidssubdir = regex_modality
+        else:
+            bidssubdir = xnatbidsfns.getSubdir(xnatbidsfns.generateBidsNameMap(bidsname)['modality'])
         if bidssubdir is None:
             print("Scan %s is assigned bidsname %s, which does NOT map to a bids subdirectory. Skipping" % (scanid, bidsname))
             continue
