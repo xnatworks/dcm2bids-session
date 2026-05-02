@@ -1,5 +1,4 @@
 import argparse
-import collections
 import json
 import requests
 import os
@@ -9,7 +8,6 @@ import subprocess
 import time
 import zipfile
 import tempfile
-import re
 import csv
 import pydicom as dicomLib
 from shutil import copy as fileCopy
@@ -20,6 +18,15 @@ requests.packages.urllib3.disable_warnings()
 
 from xnatjsession import XnatSession
 import xnatbidsfns
+from bids_naming import (
+    add_or_replace_run_entity,
+    build_bids_base,
+    duplicate_bids_suffix_counts,
+    build_naming_collision_message,
+    match_regex_pattern,
+    rename_echo_file,
+    resolve_bids_suffixes,
+)
 
 def cleanServer(server):
     server.strip()
@@ -87,42 +94,6 @@ def zipdir(dirPath=None, zipFilePath=None, includeDirInZip=True):
                 # Here to allow for inserting an empty directory.  Still TBD/TODO.
                 outFile.writestr(zipInfo, "")
 
-
-
-def rename_echo_file(filename):
-     # Extract echo number
-    echo_match = re.search(r'_e(\d+)', filename)
-    echo_str = f"echo-{echo_match.group(1)}" if echo_match else None
-
-    # Remove _e# from filename
-    filename = re.sub(r'_e\d+', '', filename)
-
-    # Replace _ph with _part-phase (we'll move it later)
-    has_phase = '_ph' in filename
-    filename = re.sub(r'_ph', '', filename)  # remove it temporarily
-
-    # Insert echo-# after last _run-XX
-    if echo_str:
-        run_matches = list(re.finditer(r'_run-\d+', filename))
-        if run_matches:
-            last_run = run_matches[-1]
-            insert_pos = last_run.end()
-            filename = filename[:insert_pos] + f"_{echo_str}" + filename[insert_pos:]
-
-    # Insert _part-phase before _bold
-    has_part_phase = '_part-phase' in filename
-
-    if has_phase and not has_part_phase:
-       filename = re.sub(r'(_bold|_sbref)', r'_part-phase\1', filename)
-    return filename
-
-
-def match_regex_pattern(seriesdesc, regex_patterns):
-    """Try regex patterns against a series description. Returns matched entry or None."""
-    for entry in regex_patterns:
-        if re.search(entry['pattern'], seriesdesc):
-            return entry
-    return None
 
 
 BIDSVERSION = "1.0.1"
@@ -296,24 +267,11 @@ try:
     if regex_patterns:
         print("Regex patterns: " + json.dumps(regex_patterns))
 
-    # Map all series descriptions to BIDS names (case insensitive)
-    resolved = []
-    for x in fieldList:
-        if x.lower() in bidsnamemap:
-            resolved.append(bidsnamemap[x.lower()])
-        elif regex_patterns:
-            regex_match = match_regex_pattern(x, regex_patterns)
-            if regex_match and regex_match.get('suffix'):
-                resolved.append(regex_match['suffix'])
-    
-    # Count occurrences
-    bidscount = collections.Counter(resolved)
-    
-    # Remove multiples
-    multiples = {seriesdesc: count for seriesdesc, count in bidscount.items() if count > 1}
+    resolved = resolve_bids_suffixes(fieldList, bidsnamemap, regex_patterns)
+    multiples = duplicate_bids_suffix_counts(fieldList, bidsnamemap, regex_patterns)
     
     # BIDS base name (BIDS reserves _ and - so remove these)
-    base = "sub-" + re.sub(r"[_-]", "", subject) + "_ses-" + re.sub(r"[_-]", "", sessionLabel) + "_"
+    base = build_bids_base(subject, sessionLabel)
     print("Bids base name is %s" % base)
     
     # Cheat and reverse scanid and seriesdesc lists so numbering is in the right order
@@ -348,20 +306,12 @@ try:
             print("Series " + seriesdesc + " matched " + bidsnamemap[seriesdesc.lower()])
             match = bidsnamemap[seriesdesc.lower()]
 
-        # split before last _
-        splitname = match.split("_")
-    
         # Check for multiples
         if match in multiples:
-            # insert run-0x
-            run = 'run-%02d' % multiples[match]
-            splitname.insert(len(splitname) - 1, run)
+            bidsname = add_or_replace_run_entity(match, multiples[match])
     
             # decrement count
             multiples[match] -= 1
-    
-            # rejoin as string
-            bidsname = "_".join(splitname)
         else:
             bidsname = match
 
@@ -649,9 +599,22 @@ try:
 
 
 
+                    if src_path == dest_path:
+                        continue
+
                     # Safety check to avoid collision
                     if os.path.exists(dest_path):
-                        raise FileExistsError(f"Collision detected: {dest_path} already exists!")
+                        raise FileExistsError(
+                            build_naming_collision_message(
+                                scanid,
+                                fieldName,
+                                seriesdesc,
+                                bidsname,
+                                echo,
+                                newechoname,
+                                dest_path,
+                            )
+                        )
 
                     # Rename file
                     print("rename ",src_path,dest_path)
@@ -862,4 +825,3 @@ try:
 # All done
 finally:
     xnatSession.close_httpsession()
-

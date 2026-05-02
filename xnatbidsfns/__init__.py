@@ -31,7 +31,17 @@ def getSubdir(modality):
     bidsFuncModalities = ['bold', 'physio', 'stim', 'sbref']
     bidsDwiModalities = ['dwi', 'dti']
     bidsBehavioralModalities = ['beh']
-    bidsFieldmapModalities = ['phasemap', 'magnitude1', 'epi']
+    bidsFieldmapModalities = [
+        'epi',
+        'fieldmap',
+        'magnitude',
+        'magnitude1',
+        'magnitude2',
+        'phase1',
+        'phase2',
+        'phasediff',
+        'phasemap',
+    ]
 
     modalityLowercase = modality.lower()
     return 'anat' if modalityLowercase in bidsAnatModalities else \
@@ -40,4 +50,3 @@ def getSubdir(modality):
            'beh' if modalityLowercase in bidsBehavioralModalities else \
            'fmap' if modalityLowercase in bidsFieldmapModalities else \
            None
-
