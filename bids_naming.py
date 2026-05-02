@@ -22,6 +22,99 @@ def _insert_entity_before_suffix(filename, entity):
     return f"{stem[:suffix_index]}_{entity}{stem[suffix_index:]}{extension}"
 
 
+def bids_suffix(bidsname):
+    return bidsname.rsplit("_", 1)[-1] if "_" in bidsname else bidsname
+
+
+def replace_bids_suffix(bidsname, new_suffix):
+    if "_" not in bidsname:
+        return new_suffix
+    stem, _ = bidsname.rsplit("_", 1)
+    return f"{stem}_{new_suffix}"
+
+
+def collapse_paired_fieldmap_run(bidsname):
+    """Use one run index for a GRE fieldmap magnitude/phase scan pair.
+
+    dcm2bids-session assigns runs per scan when several XNAT scans map to the
+    same suffix. Siemens GRE fieldmaps commonly arrive as paired magnitude and
+    phase scans with the same series description. Those two scans represent one
+    BIDS fieldmap run, so run-01/run-02 should collapse to run-01,
+    run-03/run-04 to run-02, and so on.
+    """
+    run_match = re.search(r"_run-(\d+)", bidsname)
+    if not run_match:
+        return bidsname
+
+    run_index = int(run_match.group(1))
+    paired_index = (run_index + 1) // 2
+    return (
+        f"{bidsname[:run_match.start()]}_run-{paired_index:02d}"
+        f"{bidsname[run_match.end():]}"
+    )
+
+
+def detect_gre_fieldmap_component(image_type, sequence_name="", series_description="", bidsname=""):
+    """Classify a Siemens-style GRE fieldmap scan as magnitude or phasediff.
+
+    This only applies after the bidsmap has already resolved the scan to the
+    generic BIDS ``fieldmap`` suffix. Ordinary magnitude MR images should not be
+    reclassified by this helper.
+    """
+    if bidsname and bids_suffix(bidsname) != "fieldmap":
+        return None
+
+    if isinstance(image_type, str):
+        tokens = [image_type]
+    else:
+        tokens = list(image_type or [])
+    tokens = {str(token).upper().strip() for token in tokens}
+
+    sequence_name = str(sequence_name or "").lower()
+    series_description = str(series_description or "").lower()
+    looks_like_gre_fieldmap = (
+        "field_map" in series_description
+        or "fieldmap" in series_description
+        or sequence_name.startswith(("*fm", "fm"))
+    )
+    if not looks_like_gre_fieldmap:
+        return None
+
+    if "P" in tokens:
+        return "phasediff"
+    if "M" in tokens:
+        return "magnitude"
+    return None
+
+
+def prepare_gre_fieldmap_bidsname(bidsname, component):
+    if component == "magnitude":
+        return collapse_paired_fieldmap_run(replace_bids_suffix(bidsname, "magnitude"))
+    if component == "phasediff":
+        return collapse_paired_fieldmap_run(replace_bids_suffix(bidsname, "phasediff"))
+    return bidsname
+
+
+def rename_gre_fieldmap_file(filename, component):
+    """Rename dcm2niix GRE fieldmap outputs to valid BIDS suffixes."""
+    stem, extension = _split_bids_extension(filename)
+    echo_match = re.search(r"_e(\d+)(?=(_|$))", stem)
+    echo_number = echo_match.group(1) if echo_match else None
+
+    stem = re.sub(r"_e\d+(?=(_|$))", "", stem)
+    stem = re.sub(r"_ph(?=(_|$))", "", stem)
+
+    if component == "magnitude":
+        suffix = f"magnitude{echo_number}" if echo_number else "magnitude"
+    elif component == "phasediff":
+        suffix = "phasediff"
+    else:
+        return filename
+
+    stem = replace_bids_suffix(stem, suffix)
+    return f"{stem}{extension}"
+
+
 def build_bids_base(subject, session_label):
     subject_label = re.sub(r"[_-]", "", subject)
     session = re.sub(r"[_-]", "", session_label)

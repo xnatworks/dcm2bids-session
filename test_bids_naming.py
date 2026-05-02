@@ -4,8 +4,12 @@ from bids_naming import (
     add_or_replace_run_entity,
     build_bids_base,
     build_naming_collision_message,
+    collapse_paired_fieldmap_run,
+    detect_gre_fieldmap_component,
     duplicate_bids_suffix_counts,
+    prepare_gre_fieldmap_bidsname,
     rename_echo_file,
+    rename_gre_fieldmap_file,
     resolve_scan_match,
 )
 
@@ -81,6 +85,99 @@ class TestRenameEchoFile(unittest.TestCase):
                 "sub-01_ses-01_task-rest_bold.nii.gz"
             ),
             "sub-01_ses-01_task-rest_bold.nii.gz",
+        )
+
+
+class TestGreFieldmapNaming(unittest.TestCase):
+    def test_detects_magnitude_component_from_siemens_fieldmap(self):
+        self.assertEqual(
+            detect_gre_fieldmap_component(
+                ["ORIGINAL", "PRIMARY", "M", "ND"],
+                sequence_name="*fm2d2",
+                series_description="field_map_2p4iso",
+                bidsname="sub-01_ses-01_run-01_fieldmap",
+            ),
+            "magnitude",
+        )
+
+    def test_detects_phasediff_component_from_siemens_fieldmap(self):
+        self.assertEqual(
+            detect_gre_fieldmap_component(
+                ["ORIGINAL", "PRIMARY", "P", "ND"],
+                sequence_name="*fm2d2",
+                series_description="field_map_2p4iso",
+                bidsname="sub-01_ses-01_run-02_fieldmap",
+            ),
+            "phasediff",
+        )
+
+    def test_does_not_reclassify_non_fieldmap_suffix(self):
+        self.assertIsNone(
+            detect_gre_fieldmap_component(
+                ["ORIGINAL", "PRIMARY", "M", "ND"],
+                sequence_name="*fm2d2",
+                series_description="field_map_2p4iso",
+                bidsname="sub-01_ses-01_T1w",
+            )
+        )
+
+    def test_collapses_scan_runs_to_fieldmap_pair_runs(self):
+        self.assertEqual(
+            collapse_paired_fieldmap_run("sub-01_ses-01_run-01_fieldmap"),
+            "sub-01_ses-01_run-01_fieldmap",
+        )
+        self.assertEqual(
+            collapse_paired_fieldmap_run("sub-01_ses-01_run-02_fieldmap"),
+            "sub-01_ses-01_run-01_fieldmap",
+        )
+        self.assertEqual(
+            collapse_paired_fieldmap_run("sub-01_ses-01_run-03_fieldmap"),
+            "sub-01_ses-01_run-02_fieldmap",
+        )
+        self.assertEqual(
+            collapse_paired_fieldmap_run("sub-01_ses-01_run-04_fieldmap"),
+            "sub-01_ses-01_run-02_fieldmap",
+        )
+
+    def test_prepares_magnitude_and_phasediff_bidsnames(self):
+        self.assertEqual(
+            prepare_gre_fieldmap_bidsname(
+                "sub-01_ses-01_run-03_fieldmap",
+                "magnitude",
+            ),
+            "sub-01_ses-01_run-02_magnitude",
+        )
+        self.assertEqual(
+            prepare_gre_fieldmap_bidsname(
+                "sub-01_ses-01_run-04_fieldmap",
+                "phasediff",
+            ),
+            "sub-01_ses-01_run-02_phasediff",
+        )
+
+    def test_renames_magnitude_echo_outputs_to_bids_suffixes(self):
+        self.assertEqual(
+            rename_gre_fieldmap_file(
+                "sub-01_ses-01_run-01_magnitude_e1.nii.gz",
+                "magnitude",
+            ),
+            "sub-01_ses-01_run-01_magnitude1.nii.gz",
+        )
+        self.assertEqual(
+            rename_gre_fieldmap_file(
+                "sub-01_ses-01_run-01_magnitude_e2.json",
+                "magnitude",
+            ),
+            "sub-01_ses-01_run-01_magnitude2.json",
+        )
+
+    def test_renames_phase_output_to_phasediff(self):
+        self.assertEqual(
+            rename_gre_fieldmap_file(
+                "sub-01_ses-01_run-01_phasediff_e2_ph.nii.gz",
+                "phasediff",
+            ),
+            "sub-01_ses-01_run-01_phasediff.nii.gz",
         )
 
 

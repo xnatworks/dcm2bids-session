@@ -23,8 +23,11 @@ from bids_naming import (
     build_bids_base,
     duplicate_bids_suffix_counts,
     build_naming_collision_message,
+    detect_gre_fieldmap_component,
     match_regex_pattern,
+    prepare_gre_fieldmap_bidsname,
     rename_echo_file,
+    rename_gre_fieldmap_file,
     resolve_bids_suffixes,
 )
 
@@ -39,6 +42,138 @@ def cleanServer(server):
 
 def isTrue(arg):
     return arg is not None and (arg == 'Y' or arg == '1' or arg == 'True')
+
+
+def _dicom_image_type(dataset):
+    image_type = getattr(dataset, "ImageType", [])
+    if isinstance(image_type, str):
+        return [image_type]
+    return list(image_type or [])
+
+
+def _read_first_dicom(dicom_dir):
+    files = sorted(
+        os.path.join(dicom_dir, name)
+        for name in os.listdir(dicom_dir)
+        if os.path.isfile(os.path.join(dicom_dir, name))
+    )
+    if not files:
+        return None
+    return dicomLib.dcmread(files[0], stop_before_pixels=True, force=True)
+
+
+def _echo_time_seconds(value):
+    try:
+        return round(float(value) / 1000.0, 8)
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_unique_echo_times_seconds(dicom_dir):
+    echo_times = set()
+    for name in sorted(os.listdir(dicom_dir)):
+        path = os.path.join(dicom_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            dataset = dicomLib.dcmread(path, stop_before_pixels=True, force=True)
+        except Exception:
+            continue
+        echo_time = _echo_time_seconds(getattr(dataset, "EchoTime", None))
+        if echo_time is not None:
+            echo_times.add(echo_time)
+    return sorted(echo_times)
+
+
+def _find_paired_magnitude_echo_times(scan_id, seriesdesc, scan_ids, field_values, current_dicom_dir):
+    """Find EchoTime1/EchoTime2 from the nearest magnitude scan in a GRE fieldmap pair."""
+    scans_root = os.path.dirname(os.path.dirname(current_dicom_dir))
+    try:
+        current_scan_number = int(scan_id)
+    except (TypeError, ValueError):
+        current_scan_number = None
+
+    candidates = []
+    for candidate_id, candidate_series in zip(scan_ids, field_values):
+        if candidate_id == scan_id or candidate_series != seriesdesc:
+            continue
+        try:
+            candidate_number = int(candidate_id)
+        except (TypeError, ValueError):
+            candidate_number = None
+        distance = (
+            abs(candidate_number - current_scan_number)
+            if candidate_number is not None and current_scan_number is not None
+            else 999999
+        )
+        candidates.append((distance, candidate_id))
+
+    for _, candidate_id in sorted(candidates):
+        candidate_dicom_dir = os.path.join(scans_root, str(candidate_id), "DICOM")
+        if not os.path.isdir(candidate_dicom_dir):
+            continue
+        try:
+            dataset = _read_first_dicom(candidate_dicom_dir)
+        except Exception:
+            continue
+        if dataset is None:
+            continue
+        component = detect_gre_fieldmap_component(
+            _dicom_image_type(dataset),
+            getattr(dataset, "SequenceName", ""),
+            seriesdesc,
+            "fieldmap",
+        )
+        if component != "magnitude":
+            continue
+        echo_times = _read_unique_echo_times_seconds(candidate_dicom_dir)
+        if len(echo_times) >= 2:
+            return echo_times[:2]
+
+    return None
+
+
+def _patch_phasediff_echo_times(scan_bids_dir, echo_times):
+    if not echo_times or len(echo_times) < 2:
+        return
+    for name in sorted(os.listdir(scan_bids_dir)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(scan_bids_dir, name)
+        with open(path) as infile:
+            sidecar = json.load(infile)
+        sidecar["EchoTime1"] = echo_times[0]
+        sidecar["EchoTime2"] = echo_times[1]
+        with open(path, "w") as outfile:
+            json.dump(sidecar, outfile, indent=4)
+            outfile.write("\n")
+
+
+def _rename_scan_outputs(scan_dir, rename_fn, scanid, field_name, field_value, bidsname, bidssubdir):
+    rows = []
+    for source_name in sorted(os.listdir(scan_dir)):
+        target_name = rename_fn(source_name)
+        source_path = os.path.join(scan_dir, source_name)
+        target_path = os.path.join(scan_dir, target_name)
+
+        if source_path != target_path:
+            if os.path.exists(target_path):
+                raise FileExistsError(
+                    build_naming_collision_message(
+                        scanid,
+                        field_name,
+                        field_value,
+                        bidsname,
+                        source_name,
+                        target_name,
+                        target_path,
+                    )
+                )
+            print("rename ", source_path, target_path)
+            os.rename(source_path, target_path)
+
+        rows.append([os.path.join(bidssubdir, target_name), session, scanid])
+    return rows
 
 
 def uploadNifti():
@@ -444,6 +579,9 @@ try:
             sys.stderr.write(str(e))
             continue
     
+        fieldmap_component = None
+        fieldmap_echo_times = None
+
         if usingDicom:
             print('Checking modality in DICOM headers of file %s.' % name)
             d = dicomLib.dcmread(name)
@@ -457,6 +595,43 @@ try:
             else:
                 print('Could not read modality from DICOM headers. Skipping.')
                 continue
+
+            fieldmap_component = detect_gre_fieldmap_component(
+                _dicom_image_type(d),
+                getattr(d, "SequenceName", ""),
+                seriesdesc,
+                bidsname,
+            )
+            if fieldmap_component:
+                original_bidsname = bidsname
+                bidsname = prepare_gre_fieldmap_bidsname(bidsname, fieldmap_component)
+                bidssubdir = xnatbidsfns.getSubdir(
+                    xnatbidsfns.generateBidsNameMap(bidsname)['modality']
+                )
+                bidsfilename = os.path.join(bidssubdir, bidsname)
+                print(
+                    "Refined GRE fieldmap scan %s from %s to %s (%s)."
+                    % (scanid, original_bidsname, bidsname, fieldmap_component)
+                )
+
+                if fieldmap_component == "phasediff":
+                    fieldmap_echo_times = _find_paired_magnitude_echo_times(
+                        scanid,
+                        seriesdesc,
+                        scanIDList,
+                        fieldList,
+                        scanDicomDir,
+                    )
+                    if fieldmap_echo_times:
+                        print(
+                            "Using phasediff EchoTime1/EchoTime2 %s from paired magnitude scan."
+                            % fieldmap_echo_times
+                        )
+                    else:
+                        print(
+                            "WARNING: Could not find paired magnitude echo times for phasediff scan %s."
+                            % scanid
+                        )
     
         ##########
         # Download remaining DICOMs
@@ -574,59 +749,41 @@ try:
             if "nii" in f:
                 os.rename(os.path.join(scanBidsDir, f), os.path.join(scanImgDir, f))
     
-        # Check number of files in image directory, if more than one assume multiple echoes
-        numechoes = len(os.listdir(scanImgDir))  # multiple .nii.gz files will be generated by dcm2niix if there are multiple echoes
-        if numechoes > 1:
-            # Loop through set of folders (IMG and BIDS)
+        if fieldmap_component:
             for dir in (scanImgDir, scanBidsDir):
-                # Get sorted list of files
-                multiple_echoes = sorted(os.listdir(dir))
-    
-                # Divide length of file list by number of echoes to find out how many files in each echo
-                # (Multiband DWI would have BVEC, BVAL, and JSON in BIDS dir for each echo)
-                filesinecho = len(multiple_echoes) / numechoes
-    
-                echonumber = 1
-                filenumber = 0  # Start from 0 for simpler logic
-
-                for echo in multiple_echoes:  # assuming `echo_files` is your list of files to process
-                    
-                    newechoname=rename_echo_file(echo)
-
-                   
-                    src_path = os.path.join(dir, echo)
-                    dest_path = os.path.join(dir, newechoname)
-
-
-
-                    if src_path == dest_path:
-                        continue
-
-                    # Safety check to avoid collision
-                    if os.path.exists(dest_path):
-                        raise FileExistsError(
-                            build_naming_collision_message(
-                                scanid,
-                                fieldName,
-                                seriesdesc,
-                                bidsname,
-                                echo,
-                                newechoname,
-                                dest_path,
-                            )
-                        )
-
-                    # Rename file
-                    print("rename ",src_path,dest_path)
-                    os.rename(src_path, dest_path)
-
-                    # Add to scans.tsv
-                    scansTsv.append([os.path.join(bidssubdir, newechoname), session, scanid])
-
-
+                scansTsv.extend(
+                    _rename_scan_outputs(
+                        dir,
+                        lambda name, component=fieldmap_component: rename_gre_fieldmap_file(name, component),
+                        scanid,
+                        fieldName,
+                        seriesdesc,
+                        bidsname,
+                        bidssubdir,
+                    )
+                )
+            if fieldmap_component == "phasediff":
+                _patch_phasediff_echo_times(scanBidsDir, fieldmap_echo_times)
         else:
-            # Add to scansTsv
-            scansTsv.append([bidsfilename, session, scanid])
+            # Check number of files in image directory, if more than one assume multiple echoes
+            numechoes = len(os.listdir(scanImgDir))  # multiple .nii.gz files will be generated by dcm2niix if there are multiple echoes
+            if numechoes > 1:
+                # Loop through set of folders (IMG and BIDS)
+                for dir in (scanImgDir, scanBidsDir):
+                    scansTsv.extend(
+                        _rename_scan_outputs(
+                            dir,
+                            rename_echo_file,
+                            scanid,
+                            fieldName,
+                            seriesdesc,
+                            bidsname,
+                            bidssubdir,
+                        )
+                    )
+            else:
+                # Add to scansTsv
+                scansTsv.append([bidsfilename, session, scanid])
 
         ##########
         # Upload results
