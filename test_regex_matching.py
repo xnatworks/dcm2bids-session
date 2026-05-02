@@ -212,6 +212,16 @@ class TestSubdirResolution(unittest.TestCase):
         bidssubdir = self._get_subdir("sub-01_ses-01_epi", None)
         self.assertEqual(bidssubdir, "fmap")
 
+    def test_fieldmap_suffix_derives_fmap(self):
+        bidssubdir = self._get_subdir("sub-01_ses-01_run-01_fieldmap", None)
+        self.assertEqual(bidssubdir, "fmap")
+
+    def test_standard_fieldmap_suffixes_derive_fmap(self):
+        for suffix in ("magnitude1", "magnitude2", "phase1", "phase2", "phasediff"):
+            with self.subTest(suffix=suffix):
+                bidssubdir = self._get_subdir(f"sub-01_ses-01_{suffix}", None)
+                self.assertEqual(bidssubdir, "fmap")
+
     def test_regex_modality_fmap(self):
         bidssubdir = self._get_subdir("sub-01_ses-01_epi", "fmap")
         self.assertEqual(bidssubdir, "fmap")
