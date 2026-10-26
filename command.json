@@ -1,5 +1,5 @@
 {
-    "name": "dcm2bids-session-v18",
+    "name": "dcm2bids-session-v2.18",
     "description": "Runs dcm2niix https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20250506/dcm2niix_lnx.zip on a session's scans, and uploads the NIFTI and BIDS json",
     "version": "2.18",
     "schema-version": "1.0",
@@ -102,8 +102,8 @@
     "outputs": [],
     "xnat": [
       {
-        "name": "dcm2bids-session-v18",
-        "description": "Run dcm2bids on a Session(v18)",
+        "name": "dcm2bids-session-v2.18",
+        "description": "Run dcm2bids on a Session(v2.18)",
         "contexts": [
           "xnat:imageSessionData"
         ],
