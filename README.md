@@ -14,6 +14,11 @@ XNAT container service image that runs dcm2niix on an imaging session's scans, c
 - Supports overwrite and skip-unusable options
 - Configurable scan field for mapping (series_description, type, or series_class)
 
+## Changes in v2.18
+
+- Renew the XNAT session when it expires during long-running conversions (e.g. very large series), and retry a request once with a fresh session if XNAT rejects it with a 401
+- Route all XNAT uploads and deletes through the session-renewing helpers instead of the raw HTTP session
+
 ## Changes in v2.14
 
 - Upgrade dcm2niix from v1.0.20241211 to v1.0.20250506
