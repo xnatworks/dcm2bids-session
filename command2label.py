@@ -24,7 +24,10 @@ commandStrList = []
 for commandFile in args.commands:
     with open(commandFile) as f:
         commandObj = json.load(f)
+    # Escape backslashes first: Docker unescapes the quoted LABEL value, so JSON escapes
+    # like \" must survive as \\\" or the label stops being valid JSON
     commandStr = json.dumps(commandObj) \
+                        .replace('\\', '\\\\') \
                         .replace('"', r'\"') \
                         .replace('$', r'\$')
     commandStrList.append(commandStr)
