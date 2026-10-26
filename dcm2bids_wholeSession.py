@@ -299,8 +299,7 @@ try:
     
     def get(url, **kwargs):
         try:
-            xnatSession.renew_httpsession()
-            r = xnatSession.httpsess.get(url, **kwargs)
+            r = xnatSession.get(url, **kwargs)
             r.raise_for_status()
         except (requests.ConnectionError, requests.exceptions.RequestException) as e:
             print("Request Failed")
@@ -351,7 +350,7 @@ try:
     print()
     print("Get site-wide BIDS map")
     # We don't use the convenience get() method because that throws exceptions when the object is not found.
-    r = xnatSession.httpsess.get(host + "/data/config/bids/bidsmap", params={"contents": True})
+    r = xnatSession.get(host + "/data/config/bids/bidsmap", params={"contents": True})
     if r.ok:
         bidsmaptoadd = r.json()
         for mapentry in bidsmaptoadd:
@@ -361,7 +360,7 @@ try:
         print("Could not read site-wide BIDS map")
     
     print("Get project BIDS map if one exists")
-    r = xnatSession.httpsess.get(host + "/data/projects/%s/config/bids/bidsmap" % project, params={"contents": True})
+    r = xnatSession.get(host + "/data/projects/%s/config/bids/bidsmap" % project, params={"contents": True})
     if r.ok:
         bidsmaptoadd = r.json()
         for mapentry in bidsmaptoadd:
@@ -369,7 +368,7 @@ try:
                 bidsmaplist.append(mapentry)
     else:
         print("Could not read project BIDS map from config service, checking project resource")
-        r = xnatSession.httpsess.get(host + "/data/projects/%s/resources/BIDS_bidsmap/files/bidsmap.json" % project)
+        r = xnatSession.get(host + "/data/projects/%s/resources/BIDS_bidsmap/files/bidsmap.json" % project)
         if r.ok:
             print("Found BIDS map in project resource BIDS_bidsmap/bidsmap.json")
             bidsmaptoadd = r.json()
@@ -799,10 +798,10 @@ try:
                 queryArgs = {}
                 if workflowId is not None:
                     queryArgs["event_id"] = workflowId
-                r = xnatSession.httpsess.delete(host + "/data/experiments/%s/scans/%s/resources/NIFTI" % (session, scanid), params=queryArgs)
+                r = xnatSession.delete(host + "/data/experiments/%s/scans/%s/resources/NIFTI" % (session, scanid), params=queryArgs)
                 r.raise_for_status()
     
-                r = xnatSession.httpsess.delete(host + "/data/experiments/%s/scans/%s/resources/BIDS" % (session, scanid), params=queryArgs)
+                r = xnatSession.delete(host + "/data/experiments/%s/scans/%s/resources/BIDS" % (session, scanid), params=queryArgs)
                 r.raise_for_status()
             except (requests.ConnectionError, requests.exceptions.RequestException) as e:
                 print("There was a problem deleting")
@@ -817,14 +816,14 @@ try:
             queryArgs["event_id"] = workflowId
         if uploadByRef:
             queryArgs["reference"] = os.path.abspath(scanImgDir)
-            r = xnatSession.httpsess.put(host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs)
+            r = xnatSession.put(host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs)
             #r = uploadNifti(xnatSession,host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs)
         else:
             queryArgs["extract"] = True
             (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
             zipdir(dirPath=os.path.abspath(scanImgDir), zipFilePath=tempFilePath, includeDirInZip=False)
             files = {'file': open(tempFilePath, 'rb')}
-            r = xnatSession.httpsess.put(host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs, files=files)
+            r = xnatSession.put(host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs, files=files)
             #r = uploadNifti(xnatSession,host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs, files=files)
 
             os.remove(tempFilePath)
@@ -836,13 +835,13 @@ try:
             queryArgs["event_id"] = workflowId
         if uploadByRef:
             queryArgs["reference"] = os.path.abspath(scanBidsDir)
-            r = xnatSession.httpsess.put(host + "/data/experiments/%s/scans/%s/resources/BIDS/files" % (session, scanid), params=queryArgs)
+            r = xnatSession.put(host + "/data/experiments/%s/scans/%s/resources/BIDS/files" % (session, scanid), params=queryArgs)
         else:
             queryArgs["extract"] = True
             (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
             zipdir(dirPath=os.path.abspath(scanBidsDir), zipFilePath=tempFilePath, includeDirInZip=False)
             files = {'file': open(tempFilePath, 'rb')}
-            r = xnatSession.httpsess.put(host + "/data/experiments/%s/scans/%s/resources/BIDS/files" % (session, scanid), params=queryArgs, files=files)
+            r = xnatSession.put(host + "/data/experiments/%s/scans/%s/resources/BIDS/files" % (session, scanid), params=queryArgs, files=files)
             os.remove(tempFilePath)
         r.raise_for_status()
 
@@ -883,7 +882,7 @@ try:
             if workflowId is not None:
                 queryArgs["event_id"] = workflowId
     
-            r = xnatSession.httpsess.delete(host + "/data/experiments/%s/resources/BIDS" % session, params=queryArgs)
+            r = xnatSession.delete(host + "/data/experiments/%s/resources/BIDS" % session, params=queryArgs)
             r.raise_for_status()
             uploadSessionBids = True
         except (requests.ConnectionError, requests.exceptions.RequestException) as e:
@@ -950,7 +949,7 @@ try:
     if workflowId is not None:
         queryArgs["event_id"] = workflowId
     
-    r = xnatSession.httpsess.put(host + "/data/experiments/%s/resources/BIDS/files/dataset_description.json" % session, json=dataset_description, params=queryArgs)
+    r = xnatSession.put(host + "/data/experiments/%s/resources/BIDS/files/dataset_description.json" % session, json=dataset_description, params=queryArgs)
     r.raise_for_status()
     
     # Generate CHANGES
@@ -958,7 +957,7 @@ try:
     
     # Upload
     h = {"content-type": "text/plain"}
-    r = xnatSession.httpsess.put(host + "/data/experiments/%s/resources/BIDS/files/CHANGES" % session, data=changes, params=queryArgs, headers=h)
+    r = xnatSession.put(host + "/data/experiments/%s/resources/BIDS/files/CHANGES" % session, data=changes, params=queryArgs, headers=h)
     r.raise_for_status()
 
     # Generate scans.tsv
@@ -974,7 +973,7 @@ try:
     if workflowId is not None:
         queryArgs["event_id"] = workflowId
     files = {'file': open(tsvfile, 'rb')}
-    r = xnatSession.httpsess.put(host + "/data/experiments/%s/resources/BIDS/files/%s" % (session, tsvname), params=queryArgs, files=files)
+    r = xnatSession.put(host + "/data/experiments/%s/resources/BIDS/files/%s" % (session, tsvname), params=queryArgs, files=files)
     r.raise_for_status()
     
     print('All done with session-level metadata.')

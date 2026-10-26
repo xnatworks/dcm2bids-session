@@ -76,6 +76,39 @@ class XnatSession():
 
         return True
 
+    def request(self, method, url, **kwargs):
+        # Renew the session if it is stale, then retry once with a fresh session if XNAT
+        # still rejects it (e.g. the server-side idle timeout elapsed during a long conversion)
+        self.renew_httpsession()
+        response = self.httpsess.request(method, url, **kwargs)
+        if response.status_code == 401:
+            self.logger.debug('[SESSION] %s %s returned 401, renewing XNAT session and retrying' % (method, url))
+            self.lastrenew = None
+            self.renew_httpsession()
+            self.rewind_files(kwargs.get('files'))
+            response = self.httpsess.request(method, url, **kwargs)
+        return response
+
+    def get(self, url, **kwargs):
+        return self.request('GET', url, **kwargs)
+
+    def put(self, url, **kwargs):
+        return self.request('PUT', url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self.request('DELETE', url, **kwargs)
+
+    @staticmethod
+    def rewind_files(files):
+        # Uploaded file objects were read to EOF by the first attempt, so seek back before resending
+        if not files:
+            return
+        for value in (files.values() if isinstance(files, dict) else files):
+            if isinstance(value, (tuple, list)):
+                value = value[1] if len(value) > 1 else value[0]
+            if hasattr(value, 'seek'):
+                value.seek(0)
+
     def close_httpsession(self):
         if self.httpsess is not None:
             # Logs out of session for cleanup
