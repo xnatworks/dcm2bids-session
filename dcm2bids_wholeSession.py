@@ -5,6 +5,7 @@ import os
 import glob
 import sys
 import subprocess
+import traceback
 import time
 import zipfile
 import tempfile
@@ -18,7 +19,10 @@ requests.packages.urllib3.disable_warnings()
 
 from xnatjsession import XnatSession
 import xnatbidsfns
+import bids_asl
 from bids_naming import (
+    scans_tsv_clashes,
+    scans_tsv_resource_path,
     add_or_replace_run_entity,
     build_bids_base,
     duplicate_bids_suffix_counts,
@@ -28,6 +32,7 @@ from bids_naming import (
     prepare_gre_fieldmap_bidsname,
     rename_echo_file,
     rename_gre_fieldmap_file,
+    scans_tsv_rows,
     resolve_bids_suffixes,
 )
 
@@ -149,8 +154,7 @@ def _patch_phasediff_echo_times(scan_bids_dir, echo_times):
             outfile.write("\n")
 
 
-def _rename_scan_outputs(scan_dir, rename_fn, scanid, field_name, field_value, bidsname, bidssubdir):
-    rows = []
+def _rename_scan_outputs(scan_dir, rename_fn, scanid, field_name, field_value, bidsname):
     for source_name in sorted(os.listdir(scan_dir)):
         target_name = rename_fn(source_name)
         source_path = os.path.join(scan_dir, source_name)
@@ -171,9 +175,6 @@ def _rename_scan_outputs(scan_dir, rename_fn, scanid, field_name, field_value, b
                 )
             print("rename ", source_path, target_path)
             os.rename(source_path, target_path)
-
-        rows.append([os.path.join(bidssubdir, target_name), session, scanid])
-    return rows
 
 
 def uploadNifti():
@@ -231,7 +232,7 @@ def zipdir(dirPath=None, zipFilePath=None, includeDirInZip=True):
 
 
 
-BIDSVERSION = "1.0.1"
+BIDSVERSION = "1.11.2"
 
 parser = argparse.ArgumentParser(description="Run dcm2niix on every file in a session")
 parser.add_argument("--host", default="https://cnda.wustl.edu", help="CNDA host", required=True)
@@ -393,6 +394,8 @@ try:
         # legacy
         key = 'series_description'
         bidsnamemap = {x[key].lower(): x['bidsname'] for x in bidsmaplist if key in x and 'bidsname' in x}
+    # The whole entry per mapping value, for per-entry options such as "sidecar" and "aslcontext"
+    bidsentrymap = {x[key].lower(): x for x in bidsmaplist if key in x and 'bidsname' in x}
 
     #print "bidsnamemap: " + json.dumps(bidsnamemap)
 
@@ -401,6 +404,9 @@ try:
     if regex_patterns:
         print("Regex patterns: " + json.dumps(regex_patterns))
 
+    # Perf names are made valid before run numbers are assigned, so names that become equal get runs
+    bidsnamemap, regex_patterns = bids_asl.normalize_perf_map_names(bidsnamemap, regex_patterns)
+
     resolved = resolve_bids_suffixes(fieldList, bidsnamemap, regex_patterns)
     multiples = duplicate_bids_suffix_counts(fieldList, bidsnamemap, regex_patterns)
     
@@ -408,6 +414,23 @@ try:
     base = build_bids_base(subject, sessionLabel)
     print("Bids base name is %s" % base)
     
+    # With overwrite off, scans that already have a NIFTI resource keep it. Their BIDS-named images
+    # are read first, so a scan converted earlier in the loop cannot take one of their names.
+    retainedNiftiNames = {}
+    if not overwrite:
+        for retainedScanId in scanIDList:
+            try:
+                r = xnatSession.get(host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, retainedScanId),
+                                    params={"format": "json"})
+                if r.status_code == 404:
+                    continue
+                r.raise_for_status()
+                retainedNiftiNames[retainedScanId] = [
+                    f["Name"] for f in r.json()["ResultSet"]["Result"] if f["Name"].startswith(base)]
+            except (requests.exceptions.RequestException, ValueError, KeyError) as e:
+                print("WARNING: could not list the NIFTI resource of scan %s, so its images are not in scans.tsv "
+                      "or checked for name clashes: %s" % (retainedScanId, e))
+
     # Cheat and reverse scanid and seriesdesc lists so numbering is in the right order
     scansTsv = []
     for scanid, seriesdesc in zip(reversed(scanIDList), reversed(fieldList)):
@@ -418,6 +441,7 @@ try:
         print('Assigning BIDS name for scan %s.' % scanid)
 
         regex_modality = None
+        map_entry = {}
         if seriesdesc.lower() not in bidsnamemap:
             # Try regex patterns
             if regex_patterns:
@@ -428,6 +452,7 @@ try:
                         continue
                     match = regex_match['suffix']
                     regex_modality = regex_match.get('modality')
+                    map_entry = regex_match
                     print("Series " + seriesdesc + " matched regex pattern: " + regex_match['pattern'] + " → " + match)
                 else:
                     print("Series " + seriesdesc + " not found in BIDSMAP")
@@ -439,6 +464,7 @@ try:
         else:
             print("Series " + seriesdesc + " matched " + bidsnamemap[seriesdesc.lower()])
             match = bidsnamemap[seriesdesc.lower()]
+            map_entry = bidsentrymap.get(seriesdesc.lower(), {})
 
         # Check for multiples
         if match in multiples:
@@ -458,7 +484,6 @@ try:
         if bidssubdir is None:
             print("Scan %s is assigned bidsname %s, which does NOT map to a bids subdirectory. Skipping" % (scanid, bidsname))
             continue
-        bidsfilename = os.path.join(bidssubdir, bidsname)
     
         # Get scan resources
         print("Get scan resources for scan %s." % scanid)
@@ -470,8 +495,15 @@ try:
         # Do initial checks to determine if scan should be skipped
         hasNifti = any([res["label"] == "NIFTI" for res in scanResources])  # Store this for later
         if hasNifti and not overwrite:
-            # Add entry to scans.tsv
-            scansTsv.append([bidsfilename, session, scanid])
+            # Add the BIDS-named images already in the NIFTI resource to scans.tsv; files another
+            # tool wrote there are not part of the BIDS dataset
+            retainedRows = scans_tsv_rows(retainedNiftiNames.get(scanid, []), bidssubdir, session, scanid)
+            retainedClashes = scans_tsv_clashes(retainedRows, scansTsv)
+            if retainedClashes:
+                print("WARNING: scan %s (%s) keeps %s from an earlier run, which another scan of this session also has. "
+                      "Only the first is listed in scans.tsv; rerun with overwrite to rename them." % (
+                          scanid, seriesdesc, ", ".join(retainedClashes)))
+            scansTsv.extend(row for row in retainedRows if row[0] not in retainedClashes)
             print("Scan %s has a preexisting NIFTI resource, and I am running with overwrite=False. Skipping." % scanid)
             continue
     
@@ -595,6 +627,12 @@ try:
                 print('Could not read modality from DICOM headers. Skipping.')
                 continue
 
+            if bids_asl.perf_suffix(bidsname) == "m0scan":
+                m0scanSkipReason = bids_asl.m0scan_skip_reason(_dicom_image_type(d), map_entry)
+                if m0scanSkipReason:
+                    print("Scan %s (%s) is mapped to %s, but %s Skipping." % (scanid, seriesdesc, bidsname, m0scanSkipReason))
+                    continue
+
             fieldmap_component = detect_gre_fieldmap_component(
                 _dicom_image_type(d),
                 getattr(d, "SequenceName", ""),
@@ -607,7 +645,6 @@ try:
                 bidssubdir = xnatbidsfns.getSubdir(
                     xnatbidsfns.generateBidsNameMap(bidsname)['modality']
                 )
-                bidsfilename = os.path.join(bidssubdir, bidsname)
                 print(
                     "Refined GRE fieldmap scan %s from %s to %s (%s)."
                     % (scanid, original_bidsname, bidsname, fieldmap_component)
@@ -742,7 +779,34 @@ try:
                 json.dump(json_contents, outfile, indent=4)
     
         print('Done.')
-    
+
+        # ASL: name the perfusion and M0 outputs, write aslcontext.tsv and complete the sidecars
+        aslOutputs = None
+        if usingDicom and bids_asl.perf_suffix(bidsname) == "asl":
+            try:
+                aslOutputs = bids_asl.process_asl_outputs(scanBidsDir, bidsname, map_entry)
+            except (ValueError, OSError) as e:
+                print("ERROR: could not prepare BIDS perf files for scan %s (%s, %s): %s. Skipping this scan." % (
+                    scanid, seriesdesc, bidsname, e))
+                traceback.print_exc(file=sys.stdout)
+                continue
+            if aslOutputs is None:
+                print("Scan %s (%s) was not converted to BIDS perf files; see the message above. Skipping this scan." % (
+                    scanid, seriesdesc))
+                continue
+        elif usingDicom and bids_asl.perf_suffix(bidsname) == "m0scan":
+            try:
+                m0scanOutputs = bids_asl.process_standalone_m0scan(scanBidsDir, bidsname, map_entry)
+            except (ValueError, OSError) as e:
+                print("ERROR: could not prepare the BIDS m0scan sidecar for scan %s (%s, %s): %s. Skipping this scan." % (
+                    scanid, seriesdesc, bidsname, e))
+                traceback.print_exc(file=sys.stdout)
+                continue
+            if m0scanOutputs is None:
+                print("Scan %s (%s) was not converted to a BIDS m0scan; see the message above. Skipping this scan." % (
+                    scanid, seriesdesc))
+                continue
+
         # Move imaging to image directory
         for f in os.listdir(scanBidsDir):
             if "nii" in f:
@@ -750,39 +814,43 @@ try:
     
         if fieldmap_component:
             for dir in (scanImgDir, scanBidsDir):
-                scansTsv.extend(
-                    _rename_scan_outputs(
-                        dir,
-                        lambda name, component=fieldmap_component: rename_gre_fieldmap_file(name, component),
-                        scanid,
-                        fieldName,
-                        seriesdesc,
-                        bidsname,
-                        bidssubdir,
-                    )
+                _rename_scan_outputs(
+                    dir,
+                    lambda name, component=fieldmap_component: rename_gre_fieldmap_file(name, component),
+                    scanid,
+                    fieldName,
+                    seriesdesc,
+                    bidsname,
                 )
             if fieldmap_component == "phasediff":
                 _patch_phasediff_echo_times(scanBidsDir, fieldmap_echo_times)
-        else:
+        elif aslOutputs is None:
             # Check number of files in image directory, if more than one assume multiple echoes
+            # (ASL outputs are already named by bids_asl)
             numechoes = len(os.listdir(scanImgDir))  # multiple .nii.gz files will be generated by dcm2niix if there are multiple echoes
             if numechoes > 1:
                 # Loop through set of folders (IMG and BIDS)
                 for dir in (scanImgDir, scanBidsDir):
-                    scansTsv.extend(
-                        _rename_scan_outputs(
-                            dir,
-                            rename_echo_file,
-                            scanid,
-                            fieldName,
-                            seriesdesc,
-                            bidsname,
-                            bidssubdir,
-                        )
+                    _rename_scan_outputs(
+                        dir,
+                        rename_echo_file,
+                        scanid,
+                        fieldName,
+                        seriesdesc,
+                        bidsname,
                     )
-            else:
-                # Add to scansTsv
-                scansTsv.append([bidsfilename, session, scanid])
+
+        # One scans.tsv row per image written; a name another scan of this session already has
+        # (for example a GE PCASL's M0 and a separately mapped m0scan) would be overwritten in
+        # the BIDS dataset, so that scan is not uploaded
+        scanRows = scans_tsv_rows(os.listdir(scanImgDir), bidssubdir, session, scanid)
+        reservedNames = [name for otherScanId, names in retainedNiftiNames.items() if otherScanId != scanid for name in names]
+        clashes = scans_tsv_clashes(scanRows, scansTsv, reservedNames)
+        if clashes:
+            print("ERROR: scan %s (%s) would write %s, which an earlier scan of this session already has. "
+                  "Give one of them a different BIDS name (for example acq- or run-) in the BIDS map. Skipping this scan." % (
+                      scanid, seriesdesc, ", ".join(clashes)))
+            continue
 
         ##########
         # Upload results
@@ -844,6 +912,9 @@ try:
             r = xnatSession.put(host + "/data/experiments/%s/scans/%s/resources/BIDS/files" % (session, scanid), params=queryArgs, files=files)
             os.remove(tempFilePath)
         r.raise_for_status()
+
+        # Listed only once uploaded, so a scan whose upload was skipped holds no names
+        scansTsv.extend(scanRows)
 
         ###########
         ## Clean up input directory
@@ -973,7 +1044,7 @@ try:
     if workflowId is not None:
         queryArgs["event_id"] = workflowId
     files = {'file': open(tsvfile, 'rb')}
-    r = xnatSession.put(host + "/data/experiments/%s/resources/BIDS/files/%s" % (session, tsvname), params=queryArgs, files=files)
+    r = xnatSession.put(host + "/data/experiments/%s/resources/BIDS/files/%s" % (session, scans_tsv_resource_path(base)), params=queryArgs, files=files)
     r.raise_for_status()
     
     print('All done with session-level metadata.')

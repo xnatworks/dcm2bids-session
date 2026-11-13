@@ -227,3 +227,51 @@ def rename_echo_file(filename):
         filename = _insert_entity_before_suffix(filename, "part-phase")
 
     return filename
+
+
+def scans_tsv_resource_path(base):
+    """Where scans.tsv goes in the session's BIDS resource: sub-<s>/ses-<l>/sub-<s>_ses-<l>_scans.tsv.
+
+    That is its place in a BIDS dataset, so the resource stays valid when the session's BIDS
+    tree is materialized into it. base is the sub-<s>_ses-<l>_ prefix of every file name.
+    """
+    entities = [part for part in base.split("_") if part]
+    return "/".join(entities + [f"{base}scans.tsv"])
+
+
+def _image_identity(file_name):
+    """A file name without its NIfTI extension: x.nii and x.nii.gz are one BIDS image, with one sidecar."""
+    for extension in (".nii.gz", ".nii"):
+        if file_name.endswith(extension):
+            return file_name[: -len(extension)]
+    return file_name
+
+
+def scans_tsv_clashes(rows, earlier_rows, reserved_names=()):
+    """File names in rows whose image other scans of the session already have.
+
+    earlier_rows are the scans.tsv rows written so far; reserved_names are bare file names
+    that scans not yet processed keep from an earlier run (overwrite off). Images are compared
+    without their extension, so a .nii and a .nii.gz of one name clash.
+    """
+    earlier_images = {_image_identity(row[0]) for row in earlier_rows}
+    reserved_images = {_image_identity(name) for name in reserved_names}
+    return [
+        row[0]
+        for row in rows
+        if _image_identity(row[0]) in earlier_images
+        or _image_identity(os.path.basename(row[0])) in reserved_images
+    ]
+
+
+def scans_tsv_rows(file_names, bidssubdir, session, scanid):
+    """scans.tsv rows for one scan: one per NIfTI image, as BIDS requires.
+
+    BIDS scans.tsv filenames are paths relative to the session directory, with the file
+    extension; sidecars and other non-image files are not listed.
+    """
+    return [
+        [f"{bidssubdir}/{name}", session, scanid]
+        for name in sorted(file_names)
+        if _split_bids_extension(name)[1] in (".nii.gz", ".nii")
+    ]

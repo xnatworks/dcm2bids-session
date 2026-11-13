@@ -11,6 +11,9 @@ from bids_naming import (
     rename_echo_file,
     rename_gre_fieldmap_file,
     resolve_scan_match,
+    scans_tsv_clashes,
+    scans_tsv_resource_path,
+    scans_tsv_rows,
 )
 
 
@@ -204,13 +207,13 @@ class TestNamingCollisionMessage(unittest.TestCase):
         self.assertIn('"xnat_field": "cmrr_2p5iso_mb3me3_TR1500"', message)
 
 
-DEMO02_BIDS_BASE = (
-    "sub-paugaa20200428DCCN_"
-    "ses-200428084433DST131221107524366068_"
+SESSION_BIDS_BASE = (
+    "sub-subj01SITE_"
+    "ses-200101080000DST13122110752000001_"
 )
 
 
-DEMO02_REPROIN_SCANS = [
+REPROIN_SCANS = [
     ("1", "anat-scout_ND"),
     ("2", "anat-scout"),
     ("3", "anat-scout_MPR_sag"),
@@ -224,7 +227,7 @@ DEMO02_REPROIN_SCANS = [
     ("16", "func_task-rest"),
 ]
 
-DEMO02_REPROIN_BIDSMAP = [
+REPROIN_BIDSMAP = [
     {"xnat_field": "anat-T1w_acq-MPRAGE", "bidsname": "acq-MPRAGE_T1w"},
     {"xnat_field": "fmap_acq-4mm", "bidsname": "acq-4mm_epi"},
     {"xnat_field": "dwi_dir-AP", "bidsname": "dir-AP_dwi"},
@@ -234,7 +237,7 @@ DEMO02_REPROIN_BIDSMAP = [
     {"pattern": "(?i).*scout.*", "suffix": None},
 ]
 
-DEMO02_BIDS_SMOKE_SCANS = [
+BIDS_SMOKE_SCANS = [
     ("1", "localizer_32ch-head"),
     ("2", "AAHead_Scout_32ch-head"),
     ("7", "t1_mprage_sag_ipat2_1p0iso"),
@@ -248,7 +251,7 @@ DEMO02_BIDS_SMOKE_SCANS = [
     ("62", "field_map_2p5iso"),
 ]
 
-DEMO02_BIDS_SMOKE_BIDSMAP = [
+BIDS_SMOKE_BIDSMAP = [
     {"xnat_field": "t1_mprage_sag_ipat2_1p0iso", "bidsname": "T1w"},
     {"xnat_field": "cmrr_2p4iso_mb8_TR0700_SBRef", "bidsname": "task-rest_sbref"},
     {"xnat_field": "field_map_2p4iso", "bidsname": "run-01_fieldmap"},
@@ -261,25 +264,25 @@ DEMO02_BIDS_SMOKE_BIDSMAP = [
     {"pattern": "(?i).*AAHead_Scout.*", "suffix": None},
 ]
 
-DEMO02_BIDS_TEST_SCANS = [
+BIDS_TEST_SCANS = [
     ("1", "T1w"),
     ("2", "task-flanker_run-1_bold"),
     ("3", "task-flanker_run-2_bold"),
 ]
 
-DEMO02_BIDS_TEST_BIDSMAP = [
+BIDS_TEST_BIDSMAP = [
     {"xnat_field": "T1w", "bidsname": "T1w"},
     {"xnat_field": "task-flanker_run-1_bold", "bidsname": "task-flanker_run-01_bold"},
     {"xnat_field": "task-flanker_run-2_bold", "bidsname": "task-flanker_run-02_bold"},
 ]
 
-DEMO02_BIDS_GEN_E2E_SCANS = [
+BIDS_GEN_E2E_SCANS = [
     ("6", "anat-T1w_desc-mpragep2iso"),
     ("7", "dwi_acq-DKI64dir_dir-AP"),
     ("8", "dwi_acq-DKI64dir_dir-PA"),
 ]
 
-DEMO02_BIDSMAP_BUGFIX_SCANS = [
+BIDSMAP_BUGFIX_SCANS = [
     ("1", "3 Plane Localizer"),
     ("2", "anat-T1w"),
     ("3", "fmap-epi_dir-AP"),
@@ -296,7 +299,7 @@ DEMO02_BIDSMAP_BUGFIX_SCANS = [
     ("99", "PhoenixZIPReport"),
 ]
 
-DEMO02_BIDSMAP_BUGFIX_BIDSMAP = [
+BIDSMAP_BUGFIX_BIDSMAP = [
     {"xnat_field": "anat-T1w", "bidsname": "T1w"},
     {"xnat_field": "fmap-epi_dir-AP", "bidsname": "dir-AP_epi"},
     {"xnat_field": "fmap-epi_dir-PA", "bidsname": "dir-PA_epi"},
@@ -346,19 +349,19 @@ def _planned_suffixes(scans, bidsmap):
     return planned
 
 
-class TestDemo02ScanNaming(unittest.TestCase):
-    def test_demo02_bids_base_matches_existing_outputs(self):
+class TestRecordedSessionScanNaming(unittest.TestCase):
+    def test_bids_base_matches_existing_outputs(self):
         self.assertEqual(
             build_bids_base(
-                "paugaa_20200428_DCCN",
-                "20_04_28-08_44_33-DST-1_3_12_2_1107_5_2_43_66068",
+                "subj_01_SITE",
+                "20_01_01-08_00_00-DST-1_3_12_2_1107_5_2_0_00001",
             ),
-            DEMO02_BIDS_BASE,
+            SESSION_BIDS_BASE,
         )
 
-    def test_demo02_reproin_scan_suffixes(self):
+    def test_reproin_scan_suffixes(self):
         self.assertEqual(
-            _planned_suffixes(DEMO02_REPROIN_SCANS, DEMO02_REPROIN_BIDSMAP),
+            _planned_suffixes(REPROIN_SCANS, REPROIN_BIDSMAP),
             {
                 "1": None,
                 "2": None,
@@ -374,9 +377,9 @@ class TestDemo02ScanNaming(unittest.TestCase):
             },
         )
 
-    def test_demo02_bids_smoke_scan_suffixes(self):
+    def test_bids_smoke_scan_suffixes(self):
         self.assertEqual(
-            _planned_suffixes(DEMO02_BIDS_SMOKE_SCANS, DEMO02_BIDS_SMOKE_BIDSMAP),
+            _planned_suffixes(BIDS_SMOKE_SCANS, BIDS_SMOKE_BIDSMAP),
             {
                 "1": None,
                 "2": None,
@@ -392,9 +395,9 @@ class TestDemo02ScanNaming(unittest.TestCase):
             },
         )
 
-    def test_demo02_bids_test_scan_suffixes(self):
+    def test_bids_test_scan_suffixes(self):
         self.assertEqual(
-            _planned_suffixes(DEMO02_BIDS_TEST_SCANS, DEMO02_BIDS_TEST_BIDSMAP),
+            _planned_suffixes(BIDS_TEST_SCANS, BIDS_TEST_BIDSMAP),
             {
                 "1": "T1w",
                 "2": "task-flanker_run-01_bold",
@@ -402,9 +405,9 @@ class TestDemo02ScanNaming(unittest.TestCase):
             },
         )
 
-    def test_demo02_bids_gen_e2e_empty_map_does_not_resolve_scans(self):
+    def test_bids_gen_e2e_empty_map_does_not_resolve_scans(self):
         self.assertEqual(
-            _planned_suffixes(DEMO02_BIDS_GEN_E2E_SCANS, []),
+            _planned_suffixes(BIDS_GEN_E2E_SCANS, []),
             {
                 "6": None,
                 "7": None,
@@ -412,11 +415,11 @@ class TestDemo02ScanNaming(unittest.TestCase):
             },
         )
 
-    def test_demo02_bidsmap_bugfix_scan_suffixes(self):
+    def test_bidsmap_bugfix_scan_suffixes(self):
         self.assertEqual(
             _planned_suffixes(
-                DEMO02_BIDSMAP_BUGFIX_SCANS,
-                DEMO02_BIDSMAP_BUGFIX_BIDSMAP,
+                BIDSMAP_BUGFIX_SCANS,
+                BIDSMAP_BUGFIX_BIDSMAP,
             ),
             {
                 "1": None,
@@ -436,14 +439,14 @@ class TestDemo02ScanNaming(unittest.TestCase):
             },
         )
 
-    def test_demo02_multi_echo_bold_without_run_does_not_collide(self):
+    def test_multi_echo_bold_without_run_does_not_collide(self):
         source_files = [
-            f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e1.nii.gz",
-            f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e2.nii.gz",
-            f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e3.nii.gz",
-            f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e1.json",
-            f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e2.json",
-            f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e3.json",
+            f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e1.nii.gz",
+            f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e2.nii.gz",
+            f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e3.nii.gz",
+            f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e1.json",
+            f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e2.json",
+            f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_bold_e3.json",
         ]
         renamed = [rename_echo_file(name) for name in source_files]
 
@@ -451,22 +454,105 @@ class TestDemo02ScanNaming(unittest.TestCase):
         self.assertEqual(
             renamed,
             [
-                f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-1_bold.nii.gz",
-                f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-2_bold.nii.gz",
-                f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-3_bold.nii.gz",
-                f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-1_bold.json",
-                f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-2_bold.json",
-                f"{DEMO02_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-3_bold.json",
+                f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-1_bold.nii.gz",
+                f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-2_bold.nii.gz",
+                f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-3_bold.nii.gz",
+                f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-1_bold.json",
+                f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-2_bold.json",
+                f"{SESSION_BIDS_BASE}task-cmrr2p5isomb3me3TR1500_echo-3_bold.json",
             ],
         )
 
-    def test_demo02_multi_echo_sbref_with_run_keeps_run_before_echo(self):
+    def test_multi_echo_sbref_with_run_keeps_run_before_echo(self):
         self.assertEqual(
             rename_echo_file(
-                f"{DEMO02_BIDS_BASE}task-rest_run-02_sbref_e3.nii.gz"
+                f"{SESSION_BIDS_BASE}task-rest_run-02_sbref_e3.nii.gz"
             ),
-            f"{DEMO02_BIDS_BASE}task-rest_run-02_echo-3_sbref.nii.gz",
+            f"{SESSION_BIDS_BASE}task-rest_run-02_echo-3_sbref.nii.gz",
         )
+
+
+
+class TestScansTsvRows(unittest.TestCase):
+    def test_one_row_per_image_with_extension(self):
+        self.assertEqual(
+            scans_tsv_rows(["sub-01_T1w.nii.gz"], "anat", "XNAT_E1", "2"),
+            [["anat/sub-01_T1w.nii.gz", "XNAT_E1", "2"]],
+        )
+
+    def test_sidecars_and_tables_are_not_listed(self):
+        names = [
+            "sub-01_run-01_m0scan.json",
+            "sub-01_run-01_asl.nii.gz",
+            "sub-01_run-01_aslcontext.tsv",
+            "sub-01_run-01_m0scan.nii.gz",
+            "sub-01_run-01_asl.json",
+        ]
+        self.assertEqual(
+            scans_tsv_rows(names, "perf", "XNAT_E1", "5"),
+            [
+                ["perf/sub-01_run-01_asl.nii.gz", "XNAT_E1", "5"],
+                ["perf/sub-01_run-01_m0scan.nii.gz", "XNAT_E1", "5"],
+            ],
+        )
+
+    def test_multi_echo_and_uncompressed(self):
+        names = ["sub-01_task-rest_echo-2_bold.nii", "sub-01_task-rest_echo-1_bold.nii", "sub-01_task-rest_echo-1_bold.json"]
+        self.assertEqual(
+            [row[0] for row in scans_tsv_rows(names, "func", "XNAT_E1", "7")],
+            ["func/sub-01_task-rest_echo-1_bold.nii", "func/sub-01_task-rest_echo-2_bold.nii"],
+        )
+
+    def test_no_images(self):
+        self.assertEqual(scans_tsv_rows(["sub-01_T1w.json"], "anat", "XNAT_E1", "2"), [])
+
+
+class TestScansTsvResourcePath(unittest.TestCase):
+    def test_session_directory_inside_the_resource(self):
+        self.assertEqual(
+            scans_tsv_resource_path("sub-01_ses-01_"),
+            "sub-01/ses-01/sub-01_ses-01_scans.tsv",
+        )
+
+    def test_matches_build_bids_base(self):
+        self.assertEqual(
+            scans_tsv_resource_path(build_bids_base("S_1", "MR-1")),
+            "sub-S1/ses-MR1/sub-S1_ses-MR1_scans.tsv",
+        )
+
+
+class TestScansTsvClashes(unittest.TestCase):
+    def test_generated_m0_clashes_with_a_mapped_m0scan(self):
+        earlier = [["perf/sub-01_run-01_m0scan.nii.gz", "XNAT_E1", "7"]]
+        rows = [
+            ["perf/sub-01_run-01_asl.nii.gz", "XNAT_E1", "5"],
+            ["perf/sub-01_run-01_m0scan.nii.gz", "XNAT_E1", "5"],
+        ]
+        self.assertEqual(scans_tsv_clashes(rows, earlier), ["perf/sub-01_run-01_m0scan.nii.gz"])
+
+    def test_name_kept_by_a_scan_not_yet_processed(self):
+        rows = [["perf/sub-01_run-01_m0scan.nii.gz", "XNAT_E1", "5"]]
+        self.assertEqual(
+            scans_tsv_clashes(rows, [], reserved_names=["sub-01_run-01_m0scan.nii.gz"]),
+            ["perf/sub-01_run-01_m0scan.nii.gz"],
+        )
+        self.assertEqual(scans_tsv_clashes(rows, [], reserved_names=["sub-01_run-01_asl.nii.gz"]), [])
+
+    def test_nii_and_nii_gz_of_one_image_clash(self):
+        rows = [["perf/sub-01_run-01_m0scan.nii.gz", "XNAT_E1", "5"]]
+        self.assertEqual(
+            scans_tsv_clashes(rows, [["perf/sub-01_run-01_m0scan.nii", "XNAT_E1", "7"]]),
+            ["perf/sub-01_run-01_m0scan.nii.gz"],
+        )
+        self.assertEqual(
+            scans_tsv_clashes(rows, [], reserved_names=["sub-01_run-01_m0scan.nii"]),
+            ["perf/sub-01_run-01_m0scan.nii.gz"],
+        )
+
+    def test_no_clash(self):
+        earlier = [["anat/sub-01_T1w.nii.gz", "XNAT_E1", "2"]]
+        self.assertEqual(scans_tsv_clashes([["perf/sub-01_asl.nii.gz", "XNAT_E1", "5"]], earlier), [])
+        self.assertEqual(scans_tsv_clashes([], earlier), [])
 
 
 if __name__ == "__main__":
